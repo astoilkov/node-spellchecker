@@ -6,7 +6,15 @@
 #include <memory>
 #include <stdint.h>
 
+#if (V8_MAJOR_VERSION == 7 && V8_MINOR_VERSION > 2) || V8_MAJOR_VERSION > 7
+#define V8_USE_MAYBE
+#endif
+
 namespace spellchecker {
+
+const int USE_SYSTEM_DEFAULTS = 0;
+const int ALWAYS_USE_SYSTEM = 1;
+const int ALWAYS_USE_HUNSPELL = 2;
 
 struct MisspelledRange {
   size_t start;
@@ -66,7 +74,7 @@ public:
 
 class SpellcheckerFactory {
 public:
-  static SpellcheckerImplementation* CreateSpellchecker();
+  static SpellcheckerImplementation* CreateSpellchecker(int spellcheckerType);
 };
 
 inline std::vector<MisspelledRange> SpellcheckerThreadView::CheckSpelling(const uint16_t *text, size_t length)

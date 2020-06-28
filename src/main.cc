@@ -21,11 +21,49 @@ class Spellchecker : public Nan::ObjectWrap {
     info.GetReturnValue().Set(info.This());
   }
 
-  static NAN_METHOD(SetDictionary) {
+  static NAN_METHOD(SetSpellcheckerType) {
+    // Pull out the handle to the spellchecker instance.
     Nan::HandleScope scope;
 
     if (info.Length() < 1) {
-      return Nan::ThrowError("Bad argument");
+      return Nan::ThrowError("Bad argument: missing mode");
+    }
+
+    Spellchecker* that = Nan::ObjectWrap::Unwrap<Spellchecker>(info.Holder());
+
+    // If we already have an implementation, then we want to complain because
+    // we can't handle reinitializing the dictionary paths.
+    if (that->impl) {
+      return Nan::ThrowError("Cannot call SetSpellcheckerType after the dictionary has been configured or used");
+    }
+
+    // Make sure we have a sane value for our enumeration.
+    int modeNumber = info[0]->Int32Value(Nan::GetCurrentContext()).ToChecked();
+    int spellcheckerType = USE_SYSTEM_DEFAULTS;
+
+    switch (modeNumber)
+    {
+      case 0:
+        break;
+      case 1:
+        spellcheckerType = ALWAYS_USE_SYSTEM;
+        break;
+      case 2:
+        spellcheckerType = ALWAYS_USE_HUNSPELL;
+        break;
+      default:
+        return Nan::ThrowError("Bad argument: SetSpellcheckerType must be given 0, 1, or 2 as a parameter");
+    }
+
+    // Create a new one with the appropriate checker type.
+    that->impl = SpellcheckerFactory::CreateSpellchecker(spellcheckerType);
+  }
+
+  static NAN_METHOD(SetDictionary) {
+    Nan::HandleScope scope;
+
+    if (info.Length() < 2) {
+      return Nan::ThrowError("Bad arguments");
     }
 
     Spellchecker* that = Nan::ObjectWrap::Unwrap<Spellchecker>(info.Holder());
@@ -35,6 +73,9 @@ class Spellchecker : public Nan::ObjectWrap {
     if (info.Length() > 1) {
       directory = *Nan::Utf8String(info[1]);
     }
+
+    // Make sure we have the implementation loaded.
+    Spellchecker::EnsureLoadedImplementation(that);
 
     bool result = that->impl->SetDictionary(language, directory);
     info.GetReturnValue().Set(Nan::New(result));
@@ -49,6 +90,9 @@ class Spellchecker : public Nan::ObjectWrap {
     Spellchecker* that = Nan::ObjectWrap::Unwrap<Spellchecker>(info.Holder());
     std::string word = *Nan::Utf8String(info[0]);
 
+    // Make sure we have the implementation loaded.
+    Spellchecker::EnsureLoadedImplementation(that);
+
     info.GetReturnValue().Set(Nan::New(that->impl->IsMisspelled(word)));
   }
 
@@ -58,7 +102,7 @@ class Spellchecker : public Nan::ObjectWrap {
       return Nan::ThrowError("Bad argument");
     }
 
-    Handle<String> string = Handle<String>::Cast(info[0]);
+    Local<String> string = Local<String>::Cast(info[0]);
     if (!string->IsString()) {
       return Nan::ThrowError("Bad argument");
     }
@@ -71,9 +115,17 @@ class Spellchecker : public Nan::ObjectWrap {
     }
 
     std::vector<uint16_t> text(string->Length() + 1);
-    string->Write(reinterpret_cast<uint16_t *>(text.data()));
+    string->Write(
+#if V8_MAJOR_VERSION > 6
+        info.GetIsolate(),
+#endif
+        reinterpret_cast<uint16_t *>(text.data()));
 
     Spellchecker* that = Nan::ObjectWrap::Unwrap<Spellchecker>(info.Holder());
+
+    // Make sure we have the implementation loaded.
+    Spellchecker::EnsureLoadedImplementation(that);
+
     std::vector<MisspelledRange> misspelled_ranges = that->impl->CheckSpelling(text.data(), text.size());
 
     std::vector<MisspelledRange>::const_iterator iter = misspelled_ranges.begin();
@@ -82,9 +134,22 @@ class Spellchecker : public Nan::ObjectWrap {
       uint32_t start = iter->start, end = iter->end;
 
       Local<Object> misspelled_range = Nan::New<Object>();
+
+#ifdef V8_USE_MAYBE
+      {
+        Isolate* isolate = misspelled_range->GetIsolate();
+        Local<Context> context = isolate->GetCurrentContext();
+        misspelled_range->Set(context, Nan::New("start").ToLocalChecked(), Nan::New<Integer>(start)).Check();
+        misspelled_range->Set(context, Nan::New("end").ToLocalChecked(), Nan::New<Integer>(end)).Check();
+      }
+      Isolate* isolate = result->GetIsolate();
+      Local<Context> context = isolate->GetCurrentContext();
+      result->Set(context, index, misspelled_range).Check();
+#else
       misspelled_range->Set(Nan::New("start").ToLocalChecked(), Nan::New<Integer>(start));
       misspelled_range->Set(Nan::New("end").ToLocalChecked(), Nan::New<Integer>(end));
       result->Set(index, misspelled_range);
+#endif
     }
   }
 
@@ -94,7 +159,7 @@ class Spellchecker : public Nan::ObjectWrap {
       return Nan::ThrowError("Bad argument");
     }
 
-    Handle<String> string = Handle<String>::Cast(info[0]);
+    Local<String> string = Local<String>::Cast(info[0]);
     if (!string->IsString()) {
       return Nan::ThrowError("Bad argument");
     }
@@ -102,9 +167,16 @@ class Spellchecker : public Nan::ObjectWrap {
     Nan::Callback *callback = new Nan::Callback(info[1].As<Function>());
 
     std::vector<uint16_t> corpus(string->Length() + 1);
-    string->Write(reinterpret_cast<uint16_t *>(corpus.data()));
+    string->Write(
+#if V8_MAJOR_VERSION > 6
+        info.GetIsolate(),
+#endif
+        reinterpret_cast<uint16_t *>(corpus.data()));
 
     Spellchecker* that = Nan::ObjectWrap::Unwrap<Spellchecker>(info.Holder());
+
+    // Make sure we have the implementation loaded.
+    Spellchecker::EnsureLoadedImplementation(that);
 
     CheckSpellingWorker* worker = new CheckSpellingWorker(std::move(corpus), that->impl, callback);
     Nan::AsyncQueueWorker(worker);
@@ -117,8 +189,11 @@ class Spellchecker : public Nan::ObjectWrap {
     }
 
     Spellchecker* that = Nan::ObjectWrap::Unwrap<Spellchecker>(info.Holder());
-    std::string word = *Nan::Utf8String(info[0]);
 
+    // Make sure we have the implementation loaded.
+    Spellchecker::EnsureLoadedImplementation(that);
+
+    std::string word = *Nan::Utf8String(info[0]);
     that->impl->Add(word);
     return;
   }
@@ -130,17 +205,22 @@ class Spellchecker : public Nan::ObjectWrap {
     }
 
     Spellchecker* that = Nan::ObjectWrap::Unwrap<Spellchecker>(info.Holder());
-    std::string word = *Nan::Utf8String(info[0]);
 
+    // Make sure we have the implementation loaded.
+    Spellchecker::EnsureLoadedImplementation(that);
+
+    std::string word = *Nan::Utf8String(info[0]);
     that->impl->Remove(word);
     return;
   }
-
 
   static NAN_METHOD(GetAvailableDictionaries) {
     Nan::HandleScope scope;
 
     Spellchecker* that = Nan::ObjectWrap::Unwrap<Spellchecker>(info.Holder());
+
+    // Make sure we have the implementation loaded.
+    Spellchecker::EnsureLoadedImplementation(that);
 
     std::string path = ".";
     if (info.Length() > 0) {
@@ -153,7 +233,13 @@ class Spellchecker : public Nan::ObjectWrap {
     Local<Array> result = Nan::New<Array>(dictionaries.size());
     for (size_t i = 0; i < dictionaries.size(); ++i) {
       const std::string& dict = dictionaries[i];
+#ifdef V8_USE_MAYBE
+      Isolate* isolate = result->GetIsolate();
+      Local<Context> context = isolate->GetCurrentContext();
+      result->Set(context, i, Nan::New(dict.data(), dict.size()).ToLocalChecked()).Check();
+#else
       result->Set(i, Nan::New(dict.data(), dict.size()).ToLocalChecked());
+#endif
     }
 
     info.GetReturnValue().Set(result);
@@ -167,6 +253,9 @@ class Spellchecker : public Nan::ObjectWrap {
 
     Spellchecker* that = Nan::ObjectWrap::Unwrap<Spellchecker>(info.Holder());
 
+    // Make sure we have the implementation loaded.
+    Spellchecker::EnsureLoadedImplementation(that);
+
     std::string word = *Nan::Utf8String(info[0]);
     std::vector<std::string> corrections =
       that->impl->GetCorrectionsForMisspelling(word);
@@ -176,14 +265,20 @@ class Spellchecker : public Nan::ObjectWrap {
       const std::string& word = corrections[i];
 
       Nan::MaybeLocal<String> val = Nan::New<String>(word.data(), word.size());
+#ifdef V8_USE_MAYBE
+      Isolate* isolate = result->GetIsolate();
+      Local<Context> context = isolate->GetCurrentContext();
+      result->Set(context, i, val.ToLocalChecked()).Check();
+#else
       result->Set(i, val.ToLocalChecked());
+#endif
     }
 
     info.GetReturnValue().Set(result);
   }
 
   Spellchecker() {
-    impl = SpellcheckerFactory::CreateSpellchecker();
+    impl = NULL;
   }
 
   // actual destructor
@@ -191,13 +286,20 @@ class Spellchecker : public Nan::ObjectWrap {
     delete impl;
   }
 
+  static void EnsureLoadedImplementation(Spellchecker *that) {
+    if (!that->impl) {
+      that->impl = SpellcheckerFactory::CreateSpellchecker(USE_SYSTEM_DEFAULTS);
+    }
+  }
+
  public:
-  static void Init(Handle<Object> exports) {
+  static void Init(Local<Object> exports) {
     Local<FunctionTemplate> tpl = Nan::New<FunctionTemplate>(Spellchecker::New);
 
     tpl->SetClassName(Nan::New<String>("Spellchecker").ToLocalChecked());
     tpl->InstanceTemplate()->SetInternalFieldCount(1);
 
+    Nan::SetPrototypeMethod(tpl, "setSpellcheckerType", Spellchecker::SetSpellcheckerType);
     Nan::SetPrototypeMethod(tpl, "setDictionary", Spellchecker::SetDictionary);
     Nan::SetPrototypeMethod(tpl, "getAvailableDictionaries", Spellchecker::GetAvailableDictionaries);
     Nan::SetPrototypeMethod(tpl, "getCorrectionsForMisspelling", Spellchecker::GetCorrectionsForMisspelling);
@@ -207,11 +309,17 @@ class Spellchecker : public Nan::ObjectWrap {
     Nan::SetPrototypeMethod(tpl, "add", Spellchecker::Add);
     Nan::SetPrototypeMethod(tpl, "remove", Spellchecker::Remove);
 
-    exports->Set(Nan::New("Spellchecker").ToLocalChecked(), tpl->GetFunction());
+    Isolate* isolate = exports->GetIsolate();
+    Local<Context> context = isolate->GetCurrentContext();
+#ifdef V8_USE_MAYBE
+    exports->Set(context, Nan::New("Spellchecker").ToLocalChecked(), tpl->GetFunction(context).ToLocalChecked()).Check();
+#else
+    exports->Set(Nan::New("Spellchecker").ToLocalChecked(), tpl->GetFunction(context).ToLocalChecked());
+#endif
   }
 };
 
-void Init(Handle<Object> exports, Handle<Object> module) {
+void Init(Local<Object> exports, Local<Object> module) {
   Spellchecker::Init(exports);
 }
 
