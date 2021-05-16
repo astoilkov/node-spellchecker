@@ -2,7 +2,7 @@
   "main": "./lib/spellchecker.js",
   "name": "spellchecker",
   "description": "Bindings to native spellchecker",
-  "version": "3.5.1",
+  "version": "3.5.2",
   "licenses": [
     {
       "type": "MIT",
@@ -25,7 +25,7 @@
     "jasmine-focused": "1.x"
   },
   "dependencies": {
-    "cld": "https://gitee.com/typora-mirror/node-cld/repository/archive/master.tar.gz",
+    "cld": "^2.7.0",
     "nan": "^2.14.0"
   }
 }
