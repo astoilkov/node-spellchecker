@@ -25,7 +25,6 @@
     "jasmine-focused": "1.x"
   },
   "dependencies": {
-    "cld": "^2.7.0",
     "nan": "^2.14.0"
   }
 }
