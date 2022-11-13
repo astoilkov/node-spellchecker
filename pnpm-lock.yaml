@@ -2,7 +2,7 @@ lockfileVersion: 5.4
 
 specifiers:
   jasmine-focused: 1.x
-  nan: ^2.14.0
+  nan: ^2.17.0
 
 dependencies:
   nan: 2.17.0
